@@ -62,7 +62,7 @@ router.post("/", async (req, res) => {
 
     return res.send({ msg: "新課程已保存", savedCourse });
   } catch (e) {
-    console.error("Error creating course:", e);
+    // console.error("Error creating course:", e);
     return res.status(500).send("無法創建課程");
   }
 });
@@ -70,6 +70,10 @@ router.post("/joinCourse/:_id", async (req, res) => {
   let { _id } = req.params;
   try {
     let course = await Course.findOne({ _id }).exec();
+    // 檢查學生是否已經報名該課程
+    if (course.students.includes(req.user._id)) {
+      return res.status(400).send("您已經報名過此課程，看看別的課程吧。");
+    }
     course.students.push(req.user._id);
     await course.save();
     console.log(_id);

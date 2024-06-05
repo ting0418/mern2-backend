@@ -38,13 +38,14 @@ router.post("/register", async (req, res) => {
 
 router.post("/login", async (req, res) => {
   let { error } = loginValidation(req.body);
-  if (error) return res.status(400).send(error.details[0].message);
+  // if (error) return res.status(400).send(error.details[0].message);
 
-  // 確認信箱是否被註冊過
   const foundUser = await User.findOne({ email: req.body.email });
   if (!foundUser) {
     return res.status(401).send("沒有此用戶，請確認信箱是否正確");
   }
+  if (!req.body.password) return res.status(400).send("請輸入密碼");
+  // 確認信箱是否被註冊過
   foundUser.comparePassword(req.body.password, (err, isMatch) => {
     if (err) return res.status(500).send(err);
     if (isMatch) {
@@ -58,14 +59,15 @@ router.post("/login", async (req, res) => {
         user: foundUser,
       });
     } else {
-      return res.status(401).send("密碼有誤");
+      return res.status(401).send("密碼有誤，請重新再試一次");
     }
   });
 });
 router.post("/logout", (req, res) => {
+  // 清除Cookie
   res.clearCookie("token");
 
-  res.status(200).json({ message: "登出成功" });
+  res.status(200).send("登出成功");
 });
 
 module.exports = router;
