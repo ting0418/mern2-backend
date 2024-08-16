@@ -1,10 +1,12 @@
 const router = require("express").Router();
 const Course = require("../models").course;
+const Cart = require("../models").cart;
 const courseValidation = require("../validation").courseValidation;
 const express = require("express");
 const app = express();
 const cookieParser = require("cookie-parser");
 const passport = require("passport");
+const { user } = require("../models");
 require("../config/passport")(passport);
 app.use(cookieParser());
 router.use((req, res, next) => {
@@ -68,20 +70,121 @@ router.post("/", async (req, res) => {
 });
 router.post("/joinCourse/:_id", async (req, res) => {
   let { _id } = req.params;
+  const userId = req.user._id;
+
   try {
-    let course = await Course.findOne({ _id }).exec();
-    // 檢查學生是否已經報名該課程
-    if (course.students.includes(req.user._id)) {
-      return res.status(400).send("您已經報名過此課程，看看別的課程吧。");
+    const course = await Course.findById(_id);
+    if (!course) {
+      return res.status(404).send({ error: "找不到該課程" });
     }
-    course.students.push(req.user._id);
-    await course.save();
-    console.log(_id);
-    return res.send({ msg: "註冊完成", students: course.students });
-  } catch (e) {
-    return res.send(e);
+
+    let cart = await Cart.findOne({ user: userId });
+
+    if (!cart) {
+      cart = new Cart({ user: userId, courses: [] });
+    }
+
+    if (cart.courses.includes(_id)) {
+      return res.status(400).send({ error: "課程已在購物車中" });
+    }
+
+    cart.courses.push(_id);
+    await cart.save();
+    console.log("加入購物車:", cart);
+
+    return res.status(200).send({ message: "課程已加入購物車" });
+  } catch (error) {
+    console.error("加入購物車失敗:", error);
+    return res.status(500).send({ error: "加入購物車失敗" });
   }
 });
+
+// 結帳路由
+// router.post("/checkout", async (req, res) => {
+//   const userId = req.user._id;
+
+//   try {
+//     // 從前端 localStorage 中讀取購物車內容
+//     const cart = JSON.parse(req.body.cart); // 假設前端將購物車內容作為 JSON 字符串發送到後端
+
+//     if (!cart || cart.length === 0) {
+//       return res.status(400).send({ error: "購物車為空" });
+//     }
+
+//     const updatedCourses = await Promise.all(
+//       cart.map(async (courseId) => {
+//         const course = await Course.findById(courseId);
+//         if (!course) {
+//           console.error(`Course ${courseId} not found`);
+//           return null;
+//         }
+
+//         // 檢查該課程是否已在用戶的學生列表中
+//         if (!course.students.includes(userId)) {
+//           course.students.push(userId);
+//           await course.save();
+//         }
+
+//         return course;
+//       })
+//     );
+
+//     // 清空前端 localStorage 中的購物車內容
+//     // 這裡假設前端在結帳成功後自行清空 localStorage，後端無需處理
+//     // 如果需要後端清空，可以增加額外邏輯或API端點
+
+//     return res.status(200).send({ message: "結帳成功", updatedCourses });
+//   } catch (error) {
+//     console.error("結帳失敗:", error);
+//     return res.status(500).send({ error: "結帳失敗" });
+//   }
+// });
+router.post("/checkout", async (req, res) => {
+  const userId = req.user._id;
+
+  try {
+    const { cart, totalAmount } = req.body;
+
+    if (!cart || cart.length === 0) {
+      return res.status(400).send({ error: "購物車為空" });
+    }
+
+    // 計算來自後端的實際總金額
+    let calculatedTotal = 0;
+    const updatedCourses = await Promise.all(
+      cart.map(async (courseId) => {
+        const course = await Course.findById(courseId);
+        if (!course) {
+          console.error(`Course ${courseId} not found`);
+          return null;
+        }
+
+        calculatedTotal += course.price; // 累加每個課程的價格
+
+        // 檢查該課程是否已在用戶的學生列表中
+        if (course.students.includes(userId)) {
+          return res.status(500).send("已經報名過此課程了喔");
+        } else {
+          course.students.push(userId);
+          await course.save();
+        }
+
+        return course;
+      })
+    );
+
+    // 檢查總金額是否匹配
+    if (calculatedTotal !== totalAmount) {
+      return res.status(400).send("總金額不匹配");
+    }
+
+    return res.status(200).send({ message: "結帳成功", updatedCourses });
+  } catch (error) {
+    console.error("結帳失敗:", error.data);
+    return res.status(500).send("結帳失敗");
+  }
+});
+
 // 更改課程
 router.patch("/:_id", async (req, res) => {
   // 驗證數據是否符合規範
