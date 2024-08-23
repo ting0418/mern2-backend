@@ -99,6 +99,29 @@ router.post("/joinCourse/:_id", async (req, res) => {
   }
 });
 
+// 確認是否有購買過此課程
+router.post("/check-enrollment", async (req, res) => {
+  const userId = req.user._id;
+  const { courseId } = req.body;
+
+  try {
+    //  先找此課程
+    const course = await Course.findById(courseId);
+    if (!course) {
+      return res.status(404).send({ error: "未找到課程" });
+    }
+
+    // 检查用戶是否有買過
+    const enrolled = course.students.includes(userId);
+
+    // 返回是否購買過此課程
+    return res.status(200).send({ enrolled });
+  } catch (error) {
+    console.error("檢查報名狀態失敗:", error);
+    return res.status(500).send({ error: "檢查報名狀態失敗" });
+  }
+});
+
 // 結帳路由
 // router.post("/checkout", async (req, res) => {
 //   const userId = req.user._id;
