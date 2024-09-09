@@ -4,6 +4,8 @@ const Cart = require("../models").cart;
 const courseValidation = require("../validation").courseValidation;
 const express = require("express");
 const app = express();
+const crypto = require("crypto");
+const axios = require("axios");
 const cookieParser = require("cookie-parser");
 const passport = require("passport");
 const { user } = require("../models");
@@ -127,13 +129,14 @@ router.post("/check-enrollment", async (req, res) => {
 //   const userId = req.user._id;
 
 //   try {
-//     // 從前端 localStorage 中讀取購物車內容
-//     const cart = JSON.parse(req.body.cart); // 假設前端將購物車內容作為 JSON 字符串發送到後端
+//     const { cart, totalAmount } = req.body;
 
 //     if (!cart || cart.length === 0) {
 //       return res.status(400).send({ error: "購物車為空" });
 //     }
 
+//     // 計算來自後端的實際總金額
+//     let calculatedTotal = 0;
 //     const updatedCourses = await Promise.all(
 //       cart.map(async (courseId) => {
 //         const course = await Course.findById(courseId);
@@ -142,8 +145,12 @@ router.post("/check-enrollment", async (req, res) => {
 //           return null;
 //         }
 
+//         calculatedTotal += course.price; // 累加每個課程的價格
+
 //         // 檢查該課程是否已在用戶的學生列表中
-//         if (!course.students.includes(userId)) {
+//         if (course.students.includes(userId)) {
+//           return res.status(500).send("已經報名過此課程了喔");
+//         } else {
 //           course.students.push(userId);
 //           await course.save();
 //         }
@@ -152,14 +159,15 @@ router.post("/check-enrollment", async (req, res) => {
 //       })
 //     );
 
-//     // 清空前端 localStorage 中的購物車內容
-//     // 這裡假設前端在結帳成功後自行清空 localStorage，後端無需處理
-//     // 如果需要後端清空，可以增加額外邏輯或API端點
+//     // 檢查總金額是否匹配
+//     if (calculatedTotal !== totalAmount) {
+//       return res.status(400).send("總金額不匹配");
+//     }
 
 //     return res.status(200).send({ message: "結帳成功", updatedCourses });
 //   } catch (error) {
-//     console.error("結帳失敗:", error);
-//     return res.status(500).send({ error: "結帳失敗" });
+//     console.error("結帳失敗:", error.data);
+//     return res.status(500).send("結帳失敗");
 //   }
 // });
 router.post("/checkout", async (req, res) => {
@@ -172,43 +180,105 @@ router.post("/checkout", async (req, res) => {
       return res.status(400).send({ error: "購物車為空" });
     }
 
-    // 計算來自後端的實際總金額
+    // 計算後端實際總金額
     let calculatedTotal = 0;
+    const coursesToUpdate = [];
     const updatedCourses = await Promise.all(
       cart.map(async (courseId) => {
         const course = await Course.findById(courseId);
         if (!course) {
-          console.error(`Course ${courseId} not found`);
+          console.error(`課程 ${courseId} 不存在`);
           return null;
         }
 
-        calculatedTotal += course.price; // 累加每個課程的價格
+        calculatedTotal += course.price;
 
-        // 檢查該課程是否已在用戶的學生列表中
         if (course.students.includes(userId)) {
-          return res.status(500).send("已經報名過此課程了喔");
+          throw new Error("您已經報名過此課程");
         } else {
-          course.students.push(userId);
-          await course.save();
+          coursesToUpdate.push(course); // 收集需要更新的課程
         }
 
         return course;
       })
     );
 
-    // 檢查總金額是否匹配
     if (calculatedTotal !== totalAmount) {
       return res.status(400).send("總金額不匹配");
     }
 
-    return res.status(200).send({ message: "結帳成功", updatedCourses });
+    // 准備 LINE Pay 請求
+    const channelId = process.env.LINE_PAY_CHANNEL_ID;
+    const channelSecret = process.env.LINE_PAY_CHANNEL_SECRET;
+    const nonce = crypto.randomUUID();
+    const requestUrl = process.env.LINE_PAY_SITE;
+
+    const paymentData = {
+      amount: totalAmount,
+      currency: "TWD",
+      orderId: `order_${new Date().getTime()}`,
+      packages: [
+        {
+          id: "package_1",
+          amount: totalAmount,
+          name: "購物車訂單",
+          products: cart.map((course) => ({
+            name: course.title,
+            quantity: 1,
+            price: course.price,
+          })),
+        },
+      ],
+      redirectUrls: {
+        confirmUrl: process.env.LINE_PAY_RETURN_CONFIRM_URL,
+        cancelUrl: process.env.LINE_PAY_RETURN_CANCEL_URL,
+      },
+    };
+    const rawSignature = `${channelSecret}/${requestUrl}/${JSON.stringify(
+      paymentData
+    )}/${nonce}`;
+    const signature = crypto
+      .createHmac("sha256", channelSecret)
+      .update(rawSignature)
+      .digest("base64");
+
+    console.log(nonce);
+    console.log(signature);
+
+    const linePayResponse = await axios.post(requestUrl, paymentData, {
+      headers: {
+        "Content-Type": "application/json",
+        "X-LINE-ChannelId": channelId,
+        "X-LINE-Authorization-Nonce": nonce,
+        "X-LINE-Authorization": signature,
+      },
+    });
+
+    console.log("LINE Pay Response:", linePayResponse.data);
+    const paymentInfo = linePayResponse.data;
+
+    // 只在 LINE Pay 返回成功後才更新課程
+    await Promise.all(
+      coursesToUpdate.map(async (course) => {
+        course.students.push(userId);
+        await course.save();
+      })
+    );
+
+    return res.status(200).send({
+      message: "重定向到 LINE Pay",
+      redirectUrl: paymentInfo.info.paymentUrl.web, // 使用此 URL 導向 LINE Pay
+    });
   } catch (error) {
-    console.error("結帳失敗:", error.data);
+    console.error("結帳失敗:", error.message);
+
+    // 如果發生錯誤，記得回滾已經進行的操作（如未保存課程資料）
     return res.status(500).send("結帳失敗");
   }
 });
 
 // 更改課程
+
 router.patch("/:_id", async (req, res) => {
   // 驗證數據是否符合規範
   let { error } = courseValidation(req.body);

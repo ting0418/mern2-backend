@@ -26,7 +26,9 @@ const corsOptions = {
   allowedHeaders: ["Content-Type", "Authorization"],
   credentials: true, // 允許使用 credentials
 };
+
 //   middlewares
+
 app.use(cookieParser());
 
 app.use(express.json());
